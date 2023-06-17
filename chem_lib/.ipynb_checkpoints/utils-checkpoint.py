@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy import signal
 import torch
 def init_trial_path(args,is_save=True):
     """Initialize the path for a hyperparameter setting
@@ -102,23 +103,13 @@ class Logger(object):
     
     
     def append(self, numbers, verbose=True):
+        print(self.names)
+        print(numbers)
         assert len(self.names) == len(numbers), 'Numbers do not match names'
         for index, num in enumerate(numbers):
-            if isinstance(num, list) :
-                self.file.write('uncertainty=')
-                self.file.write(str(num[0]))
-                self.file.write('\n'+'yprob0=')
-                self.file.write(str(num[1]))
-                self.file.write('\n'+'yprob1=')
-                self.file.write(str(num[2]))
-                self.file.write('\n'+'label=')
-                self.file.write(str(num[3]))
-
-                self.file.write("\n"+"-----"+"\n")
-            else:
-                self.file.write("{0:.6f}".format(num))
-                self.file.write('\t')
-                self.numbers[self.names[index]].append(num)
+            self.file.write("{0:.6f}".format(num))
+            self.file.write('\t')
+            self.numbers[self.names[index]].append(num)
         self.file.write('\n')
         self.file.flush()
         if verbose:
@@ -151,37 +142,97 @@ class Logger(object):
         data = train_trend
         epochs = len(data.keys())
         tasks = len(data[1].keys())
-        fig, axs = plt.subplots(nrows=tasks, ncols=1, figsize=(10, 5*tasks))
-        for task_id, ax in zip(data[1].keys(), axs):
-            vacs, wbvs, cbvs, diss = [], [], [], []
-            vacs_s, wbvs_s, cbvs_s, diss_s = [], [], [], []
-            
+        
+        
+        if True :
+            all_task_vac,all_task_wbv,all_task_cbv,all_task_dis = [], [], [], []
+
+
+            fig1, ax1 = plt.subplots(nrows=1, ncols=1, figsize=(10, 10))
             for epoch in range(epochs):
                 if epoch%10 == 0 :
-                    vacs.append(np.mean(data[epoch+1][task_id][0]))
-                    wbvs.append(np.mean(data[epoch+1][task_id][1]))
-                    cbvs.append(np.mean(data[epoch+1][task_id][2]))
-                    diss.append(np.mean(data[epoch+1][task_id][3]))
-                    vacs_s.append(np.std(data[epoch+1][task_id][0]))
-                    wbvs_s.append(np.std(data[epoch+1][task_id][1]))
-                    cbvs_s.append(np.std(data[epoch+1][task_id][2]))
-                    diss_s.append(np.std(data[epoch+1][task_id][3]))
-            ax.errorbar(range(1, epochs+1,10),vacs,yerr=vacs_s,linestyle='--', label='vac')
-            ax.errorbar(range(1, epochs+1,10),wbvs,yerr=wbvs_s,linestyle='-.', label='wbv')
-            ax.errorbar(range(1, epochs+1,10),cbvs,yerr=cbvs_s,linestyle='-', label='cbv')
-            ax.errorbar(range(1, epochs+1,10),diss,yerr=diss_s,linestyle=':', label='dis')
-            # ax.plot(range(1, epochs+1), vacs, label='vac')
-            # ax.plot(range(1, epochs+1), wbvs, label='wbv')
-            # ax.plot(range(1, epochs+1), cbvs, label='cbv')
-            # ax.plot(range(1, epochs+1), diss, label='dis')
-            ax.legend()
-            ax.set_title(f'Task {task_id+1}')
-            ax.set_xlabel('Epoch')
-            ax.set_ylabel('Value')
+                    temp_v,temp_w,temp_c,temp_d = 0,0,0,0
+                    for task_id in data[1].keys():
 
-        plt.tight_layout()
-        #plt.show()
-        fig.savefig(self.fpath+'task_metrics.png')
+                        temp_v += np.mean(data[epoch+1][task_id][0])
+                        temp_w += np.mean(data[epoch+1][task_id][1])
+                        temp_c += np.mean(data[epoch+1][task_id][2])
+                        temp_d += np.mean(data[epoch+1][task_id][3])
+
+                    all_task_vac.append(temp_v/len(data[1].keys()))
+                    all_task_wbv.append(temp_w/len(data[1].keys()))
+                    all_task_cbv.append(temp_c/len(data[1].keys()))
+                    all_task_dis.append(temp_d/len(data[1].keys()))
+            window_length = 11  # The length of the filter window
+            poly_order = 2  # The order of the polynomial to fit
+            vacs_smooth = signal.savgol_filter(all_task_vac, window_length, poly_order)
+            wbvs_smooth = signal.savgol_filter(all_task_wbv, window_length, poly_order)
+            cbvs_smooth = signal.savgol_filter(all_task_cbv, window_length, poly_order)
+            diss_smooth = signal.savgol_filter(all_task_dis, window_length, poly_order)
+
+            # Plot the smoothed data
+            ax1.plot(range(1, epochs+1, 10), vacs_smooth,linewidth=3, linestyle='--', label='vac')
+            ax1.plot(range(1, epochs+1, 10), wbvs_smooth,linewidth=3, linestyle='-.', label='wbv')
+            ax1.plot(range(1, epochs+1, 10), cbvs_smooth,linewidth=3, linestyle='-', label='cbv')
+            ax1.plot(range(1, epochs+1, 10), diss_smooth,linewidth=3, linestyle=':', label='dis')  
+            ax1.legend(fontsize = 30)
+            ax1.set_title(f'Training Trend',fontsize=30)
+            ax1.set_xlabel('Epoch', fontsize=30)
+            ax1.set_ylabel('Value', fontsize=30)
+            plt.xticks(fontsize=20) 
+            plt.yticks(fontsize=20)
+
+            plt.tight_layout()
+            #plt.show()
+            fig1.savefig(self.fpath+'task_Trend.pdf')
+
+
+
+
+            fig, axs = plt.subplots(nrows=tasks, ncols=1, figsize=(10, 10))
+            for task_id, ax in zip(data[1].keys(), axs):
+                vacs, wbvs, cbvs, diss = [], [], [], []
+                vacs_s, wbvs_s, cbvs_s, diss_s = [], [], [], []
+
+                for epoch in range(epochs):
+                    if epoch%10 == 0 :
+                        vacs.append(np.mean(data[epoch+1][task_id][0]))
+                        wbvs.append(np.mean(data[epoch+1][task_id][1]))
+                        cbvs.append(np.mean(data[epoch+1][task_id][2]))
+                        diss.append(np.mean(data[epoch+1][task_id][3]))
+                        vacs_s.append(np.std(data[epoch+1][task_id][0]))
+                        wbvs_s.append(np.std(data[epoch+1][task_id][1]))
+                        cbvs_s.append(np.std(data[epoch+1][task_id][2]))
+                        diss_s.append(np.std(data[epoch+1][task_id][3]))
+                # ax.errorbar(range(1, epochs+1,10),vacs,yerr=vacs_s,linestyle='--', label='vac')
+                # ax.errorbar(range(1, epochs+1,10),wbvs,yerr=wbvs_s,linestyle='-.', label='wbv')
+                # ax.errorbar(range(1, epochs+1,10),cbvs,yerr=cbvs_s,linestyle='-', label='cbv')
+                # ax.errorbar(range(1, epochs+1,10),diss,yerr=diss_s,linestyle=':', label='dis')
+                window_length = 11  # The length of the filter window
+                poly_order = 2  # The order of the polynomial to fit
+                vacs_smooth = signal.savgol_filter(vacs, window_length, poly_order)
+                wbvs_smooth = signal.savgol_filter(wbvs, window_length, poly_order)
+                cbvs_smooth = signal.savgol_filter(cbvs, window_length, poly_order)
+                diss_smooth = signal.savgol_filter(diss, window_length, poly_order)
+
+                # Plot the smoothed data
+                ax.plot(range(1, epochs+1, 10), vacs_smooth, linestyle='--', label='vac')
+                ax.plot(range(1, epochs+1, 10), wbvs_smooth, linestyle='-.', label='wbv')
+                ax.plot(range(1, epochs+1, 10), cbvs_smooth, linestyle='-', label='cbv')
+                ax.plot(range(1, epochs+1, 10), diss_smooth, linestyle=':', label='dis')
+
+                # ax.plot(range(1, epochs+1), vacs, label='vac')
+                # ax.plot(range(1, epochs+1), wbvs, label='wbv')
+                # ax.plot(range(1, epochs+1), cbvs, label='cbv')
+                # ax.plot(range(1, epochs+1), diss, label='dis')
+                ax.legend()
+                ax.set_title(f'Task {task_id+1}')
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Value')
+
+            plt.tight_layout()
+            #plt.show()
+            fig.savefig(self.fpath+'task_metrics.pdf')
         
         torch.cuda.empty_cache()
         return df

@@ -11,34 +11,34 @@ def get_parser(root_dir='.'):
     parser = argparse.ArgumentParser(description='EM3P2')
     # dataset
     parser.add_argument('-r', '--root-dir', type=str, default=root_dir, help='root-dir')
-    parser.add_argument('-d', '--dataset', type=str, default='tox21', help='data set name')  # ['tox21','sider','muv','toxcast']
-    parser.add_argument('-td', '--test-dataset', type=str, default='tox21',help='test data set name')  # ['tox21','sider','muv','toxcast']
+    parser.add_argument('-d', '--dataset', type=str, default='sider', help='data set name')  # ['tox21','sider']
+    parser.add_argument('-td', '--test-dataset', type=str, default='sider',help='test data set name')  # ['tox21','sider'\]
     parser.add_argument('--data-dir', type=str, default=os.path.join(root_dir,'data') +'/', help='data dir')
-    parser.add_argument('--preload_train_data', type=bool, default=True)  # 0
-    parser.add_argument('--preload_test_data', type=bool, default=True)  # 0
+    parser.add_argument('--preload_train_data', type=bool, default=True)  
+    parser.add_argument('--preload_test_data', type=bool, default=True)
     parser.add_argument("--run_task", type=int, default=-1, help="run on task")
     
     # few shot
-    parser.add_argument("--n-shot-train", type=int, default=10, help="train: number of shot for each class")#choices=[1,10]
-    parser.add_argument("--n-shot-test", type=float, default=10, help="test: number of shot for each class")#choices=[1,10]
+    parser.add_argument("--n-shot-train", type=int, default=1, help="train: number of shot for each class")#choices=[1,10]
+    parser.add_argument("--n-shot-test", type=float, default=1, help="test: number of shot for each class")#choices=[1,10]
     parser.add_argument("--n-query", type=int, default=10, help="number of query in few shot learning")
 
     # training
-    parser.add_argument("--meta-lr", type=float, default=0.001, # 0.003, 0.001, 0.0006
+    parser.add_argument("--meta-lr", type=float, default=0.01, #0.01 0.005, 0.003, 0.001, 0.0006
                         help="Training: Meta learning rate")  
     parser.add_argument("--weight_decay", type=float, default=5e-5,
                         help="Training: Meta learning weight_decay")
-    parser.add_argument("--inner-lr", type=float, default=0.01, help="Training: Inner loop learning rate")  # 0.01 ##->0.1
+    parser.add_argument("--inner-lr", type=float, default=0.1, help="Training: Inner loop learning rate")  # 0.01 ##->0.1
     parser.add_argument('--epochs', type=int, default=2000,
-                        help='number of epochs to train (default: 5000)')  # 5000
-    parser.add_argument('--update_step', type=int, default = 1) # 5 ##->1
-    parser.add_argument('--update_step_test', type=int, default=1)  # 10 ##->1
-    parser.add_argument('--inner_update_step', type=int, default=1)  # 10 ##->1
-    parser.add_argument("--meta_warm_step", type=int, default=0, help="meta warp up step for encode")  # 9 ##->0
+                        help='number of epochs to train (default: 5000)')  # 2000
+    parser.add_argument('--update_step', type=int, default = 1       ) # 1
+    parser.add_argument('--update_step_test', type=int, default=1)  # 1
+    parser.add_argument('--inner_update_step', type=int, default=1)  # 1
+    parser.add_argument("--meta_warm_step", type=int, default=0, help="meta warp up step for encode")  
     parser.add_argument("--meta_warm_step2", type=int, default=10000, help="meta warp up step 2 for encode")
-    parser.add_argument("--second_order", type=int, default=1, help="second order or not")  # 9 #->1
-    parser.add_argument("--batch_task", type=int, default=32, help="Training: Meta batch size")  # 9
-    parser.add_argument("--adapt_weight", type=int, default=5, help="adaptable weights")  # 9 #->5
+    parser.add_argument("--second_order", type=int, default=1, help="second order or not")  
+    parser.add_argument("--batch_task", type=int, default=32, help="Training: Meta batch size")  
+    parser.add_argument("--adapt_weight", type=int, default=5, help="adaptable weights")  
     parser.add_argument("--eval_support", type=int, default=0, help="Training: eval s")
     # model
     ## mol-encoder
@@ -65,25 +65,20 @@ def get_parser(root_dir='.'):
     parser.add_argument('--temperature', type=int, default=1, help='temperature scaling')
     parser.add_argument('--fix_annealing_rate', type=bool, default=False, help='annealing_rate')
     parser.add_argument('--kl_scaling_factor', type=float, default=1, help='whether to scale the kl term in loss')
-    #KL or incorrect belief error
-    parser.add_argument('--use_kl_error',type=bool, default=False, help="Use KL reg. or incorrect bel. regularization")
-    
+    parser.add_argument('--use_kl_error',type=int, default=2, help="Use KL reg.(1) or incorrect bel. regularization(2)")
+    parser.add_argument('--use_cal',type=bool, default=True, help="Use avuc")
     
     
     #optimizer
     parser.add_argument('--min_learning_rate', type=float, default=0.00001, help='Min learning rate')
-    
-    
-    
-    ### adjacency reg
     parser.add_argument("--batch_norm", type=int, default=0, help="batch_norm or not")
 
     # other
-    parser.add_argument('--seed', type=int, default=0, help="Seed for splitting the dataset.")
+    parser.add_argument('--seed', type=int, default=5, help="Seed for splitting the dataset.")
     parser.add_argument('--gpu_id', type=int, default=1, help="Choose the number of GPU.")
     parser.add_argument("--result_path", type=str, default=os.path.join(root_dir,'results'), help="result path")
     parser.add_argument("--eval_steps", type=int, default=100)
-    parser.add_argument("--save-steps", type=int, default=1000, help="Training: Number of iterations between checkpoints")
+    parser.add_argument("--save-steps", type=int, default=100, help="Training: Number of iterations between checkpoints")
     parser.add_argument("--save-logs", type=int, default=0)
     parser.add_argument("--support_valid", type=int, default=0)
     parser.add_argument("--early_stop_count", type=int, default=0)

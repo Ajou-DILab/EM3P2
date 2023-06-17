@@ -12,9 +12,9 @@ import matplotlib.pyplot as plt
 import collections
 from learn2learn.utils import detach_module
 from .maml import MAML
-from ..datasets import sample_meta_datasets, sample_test_datasets, MoleculeDataset
+from ..datasets import sample_meta_datasets, sample_test_datasets, MoleculeDataset,sample_all
 from ..utils import Logger
-from chem_lib.loss_func import Evidence_Classifier, contrastive_loss
+from chem_lib.loss_func import Evidence_Classifier, AvULoss
 class attention(nn.Module):
     def __init__(self, dim):
         super(attention, self).__init__()
@@ -31,7 +31,7 @@ class attention(nn.Module):
         x = self.layers(x)
         x = self.softmax(torch.transpose(x, 1, 0))
         return x
-
+    
 
 class Meta_Trainer(nn.Module):
     def __init__(self, args, model):
@@ -39,7 +39,6 @@ class Meta_Trainer(nn.Module):
         self.args = args
         self.model = MAML(model, lr=args.inner_lr, first_order=not args.second_order, anil=False, allow_unused=True)
         #optimizer
-        #self.optimizer = torch.optim.SGD(model.parameters() , lr=  0.01)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=args.meta_lr, weight_decay=args.weight_decay)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=self.optimizer, T_max=self.args.epochs, eta_min=self.args.min_learning_rate)
         #dataload
@@ -64,31 +63,25 @@ class Meta_Trainer(nn.Module):
         self.attention = attention(self.emb_dim).to(self.device)
         self.current_epoch = 0
         self.evidence_classifier = Evidence_Classifier(self.args).to(self.device)
+        self.avucloss = AvULoss().to(self.device)
+        self.freeze = args.freeze
+        self.trial_path = args.trial_path
         #criterion은 두가지 BCEloss / Dirichlet_loss
         if self.evidence :
-            #self.criterion = dirichlet_loss
-            #self.criterion = edl_digamma_loss
             self.criterion1 = nn.CrossEntropyLoss().to(args.device)
-            #self.criterion2 = edl_mse_loss
-            
             self.criterion2 = self.evidence_classifier.calc_loss_vac_bel
+            
         else :
             self.criterion = nn.CrossEntropyLoss().to(args.device)
         
-        self.freeze = args.freeze
-        
-        
-        self.trial_path = args.trial_path
+
         trial_name = self.dataset + '_' + self.test_dataset + '@' + args.enc_gnn
         print(trial_name)
         logger = Logger(self.trial_path + '/results.txt', title=trial_name)
         log_names = ['Epoch']
         log_names += ['AUC-' + str(t) for t in args.test_tasks]
         log_names += ['AUC-Avg', 'AUC-Mid','AUC-Best']
-        log_names += ['unc-' + str(t) for t in args.test_tasks]
-        #
-        #log_names += ['loss']
-        #
+
         logger.set_names(log_names)
         self.logger = logger
          
@@ -119,7 +112,6 @@ class Meta_Trainer(nn.Module):
 
         self.train_epoch = 0
         self.best_auc=0 
-        
         self.res_logs=[]
 
     def loader_to_samples(self, data):
@@ -129,6 +121,7 @@ class Meta_Trainer(nn.Module):
             samples=samples.to(self.device)
             return samples
 
+    
     def get_data_sample(self, task_id, train=True, flag=True):
         
         if train:
@@ -139,12 +132,10 @@ class Meta_Trainer(nn.Module):
             else:
                 dataset = MoleculeDataset(self.data_dir + self.dataset + "/new/" + str(task + 1), dataset=self.dataset)
             
-            s_data, q_data, pseudo_data = sample_meta_datasets(dataset, self.dataset, task,self.n_shot_train, self.n_query)
+            s_data, q_data = sample_meta_datasets(dataset, self.dataset, task,self.n_shot_train, self.n_query,self.args.random)
             
             s_data = self.loader_to_samples(s_data)
-            
             q_data = self.loader_to_samples(q_data)
-            
             
             adapt_data = {'s_data': s_data, 's_label': s_data.y, 'q_data': q_data, 'q_label': q_data.y}
             eval_data = { }
@@ -216,37 +207,48 @@ class Meta_Trainer(nn.Module):
             
         return adaptable_weights
 
-    def get_loss(self, model, data, label,task_id ,train=True, query=False):
+    def get_loss(self, model, data, label,task_id ,train=True, query=False,test=False):
+        num_classes = len(self.train_tasks+self.test_tasks)
+        one_hot = torch.zeros(num_classes)
+        one_hot[task_id] = 1
         
         if train :
             if self.evidence :
                 #pred: logit
                 if query : # outer-loop train
-                    pred, node_emb, graph_emb,_ = model(data) #pred:logit
-                    evidence = F.softplus(pred/self.temperature)
-                    alpha = evidence + 1
-                    prob = alpha / torch.sum(alpha.detach(),1,keepdim=True)
-                    uncertainty = self.n_way/torch.sum(alpha.detach(),1)
-                    #one_task_emb = torch.div(torch.mean(graph_emb,0), 2.0)
-                    one_task_emb = torch.mean(graph_emb,0).unsqueeze(0)
+                    task_info = {}
                     
-                    loss, vacuity, wbv, cbv, dis = self.criterion2(pred, label)
-                    #print(vacuity,wbv,cbv,dis)
-                    #print(alpha,uncertainty)
-                    return loss,prob,graph_emb, vacuity,wbv,cbv,dis, one_task_emb
+                    pred, node_emb, graph_emb= model(data) 
+                    
+                    evidence = F.softplus(pred/self.temperature)
+                    
+                    alpha = evidence + 1
+
+                    prob = alpha / torch.sum(alpha.detach(),1,keepdim=True)
+                    
+                    uncertainty = self.n_way/torch.sum(alpha.detach(),1)
+
+                    dirichlet_strength = torch.sum(alpha, dim=1)
+                    
+                    dirichlet_strength = dirichlet_strength.reshape((-1, 1))
+                    # Belief
+                    belief = evidence / dirichlet_strength
+
+                    one_task_emb = torch.div(torch.mean(node_emb,0), 2.0)
+                    #one_task_emb = torch.mean(node_emb,0).unsqueeze(0)
+                    #one_task_emb = torch.mean(task_graph,0)
+
+                    loss, vacuity, wbv, cbv, dis = self.criterion2(pred/self.temperature, label,query_set=True)
+                    
+                    
+                    return loss,prob, vacuity,wbv,cbv,dis, one_task_emb,belief
                 
                 
-                else : #inner-loop train
-                    pred, node_emb, graph_emb,task_logit = model(data)
-                    #print(pred)
+                else : #INNER_LOOP (ADAPTION)
+                    pred, node_emb, graph_emb = model(data)
                     prob = F.softmax(pred)
-                    #print(prob)
                     loss = self.criterion1(prob,label)
-                    #task_feature : graph? node?
-                    task_feature = torch.mean(graph_emb,0)
-                
-                    return loss,pred,task_feature
-                
+                    return loss
 
             else :
                 pred, node_emb,graph_emb = model(data)
@@ -254,27 +256,28 @@ class Meta_Trainer(nn.Module):
                 loss = self.criterion(pred, label)
                 one_task_emb = torch.div(torch.mean(node_emb,0), 2.0)
                 return loss, one_task_emb
-        else :
+            
+            
+        else : #META-TEST -> Evaluation
+            
+            
             if self.evidence :
-                pred, node_emb,graph_emb,_ = model(data)
-                #sum of loss
+                pred, node_emb,graph_emb= model(data)
                 evidence = F.softplus(pred/self.temperature)
-                #evidence = F.softplus(pred/self.temperature)
-                
                 alpha = evidence + 1
                 prob = alpha / torch.sum(alpha.detach(),1,keepdim=True)
-                #belief = evidence / torch.sum(alpha.detach(),1,keepdim=True)
-                #uncertainty
                 uncertainty = self.n_way/torch.sum(alpha.detach(),1)#vacuity
-                #dissonance = self.evidence_classifier.calculate_dissonance3(belief)
-                ###실험 query를 테스트에 포함시켜 뭘로 데이터를 나누거나 pred의 중간값으로
-
-                    
+                _, vacuity, wbv, cbv, dis = self.criterion2(pred/self.temperature,label)
+                dirichlet_strength = torch.sum(alpha, dim=1)
+                dirichlet_strength = dirichlet_strength.reshape((-1, 1))
+                belief = evidence / dirichlet_strength
                 
-                return pred, prob, uncertainty
+                
+                return pred, prob, vacuity, wbv, cbv, dis,belief
+            
             else :
                 
-                pred, node_emb,graph_emb = model(data)
+                pred, node_emb,graph_emb,_,_ = model(data)
                 one_task_emb = torch.div(torch.mean(node_emb,0), 2.0)
                 return pred, one_task_emb
             
@@ -285,6 +288,7 @@ class Meta_Trainer(nn.Module):
         self.current_epoch = epoch
         self.evidence_classifier.current_epoch = self.current_epoch
         task_id_list = list(range(len(self.train_tasks)))
+        
         if self.batch_task > 0:
             batch_task = min(self.batch_task, len(task_id_list))
             task_id_list = random.sample(task_id_list, batch_task)
@@ -296,8 +300,6 @@ class Meta_Trainer(nn.Module):
             data_batches[task_id]=db
             train_task_df[task_id] = dict()
         ### data loaded
-
-        
         
         for k in range(self.update_step):
             losses_eval = []
@@ -326,22 +328,19 @@ class Meta_Trainer(nn.Module):
                 model.train()
                 
                 adaptable_weights = self.get_adaptable_weights(model)
-                #support set 에 대해 진행
+                #inner-loop adaption
                 for inner_step in range(self.inner_update_step): #1번(adopt per task)
                     adaptable_weights = self.get_adaptable_weights(model)
-                    
-                    ###inner loop
                     if self.evidence:
-                        loss_adapt,sprob,sgraph_emb = self.get_loss(model, train_data['s_data'],train_data['s_label'],task_id,train=True,query=False)
+                        loss_adapt= self.get_loss(model, train_data['s_data'],train_data['s_label'],task_id,train=True,query=False)
                     else :
-                        loss_adapt,_ = self.get_loss(model, train_data['s_data'],train_data['s_label'],train=True,query=False)
-
+                        loss_adapt,_ = self.get_loss(model, train_data['s_data'],train_data['s_label'],task_id,train=True,query=False)
                     model.adapt(loss_adapt, adaptable_weights = adaptable_weights)
-                     
-                    ####outer loop : query 데이터에 대한 loss
-                    if self.evidence:#loss,prob,graph_emb, vacuity,wbv,cbv,dis, one_task_emb(tensor로 들어옴)
-                        loss_eval,qprob,qgraph_emb,quncertainty,wbv,cbv,dis, one_task_emb = self.get_loss(model, train_data['q_data'], train_data['q_label'],task_id,train=True,query=True)
+                    
+                    #outer loop query loss acquisition
+                    if self.evidence:
                         
+                        loss_eval,qprob,quncertainty,wbv,cbv,dis, one_task_emb,_ = self.get_loss(model, train_data['q_data'], train_data['q_label'],task_id,train=True,query=True)
                         
                         #For task uncertainty
                         av_q_vac = torch.mean(quncertainty)
@@ -353,61 +352,20 @@ class Meta_Trainer(nn.Module):
                         wbv_item = [np.round(i.item(),4) for i in wbv]
                         cbv_item = [np.round(i.item(),4) for i in cbv]
                         dis_item = [np.round(i.item(),4) for i in dis]
-                        # mean 추가?
                         task_epoch[task_id] = [vac_item,wbv_item,cbv_item,dis_item]
-                        # start = 1.0#self.args.vac_inc_balance
-                        # end = 0.5
-                        # num_epochs = 50
-                        # diff = start - end
-                        # lambda_val = 1.0 - diff * min(1,epoch/num_epochs)
-                        # one_task_unc = av_q_vac * lambda_val + av_q_dis * (1.0 - lambda_val)
+                        
                         
                     else :
-                        loss_eval,one_task_emb = self.get_loss(model, train_data['q_data'], train_data['q_label'],train=True,query=True)
-                    #loss_eval = loss_eval/(self.n_query)
-                    #closs = contrastive_loss(sgraph_emb,qgraph_emb)
-                    
-                    #task_unc.append(one_task_unc)
+                        loss_eval,one_task_emb = self.get_loss(model, train_data['q_data'], train_data['q_label'],task_id,train=True,query=True)
                     task_emb.append(one_task_emb)
                     losses_eval.append(loss_eval)
-                
-                #saving data of each task
-                #print(len(train_data['s_data']))
-                if self.evidence:
-                    train_task_df[task_id]["support"] = {}
-                    train_task_df[task_id]["query"] = {}
 
-                    for i in range(self.n_shot_train*2):
-                        train_task_df[task_id]["support"][train_data['s_data'].id[i].item()]={
-                            "smiles":train_data['s_data'].smiles[i],
-                            "labels":train_data['s_data'].y[i].item(),
-                            "probability0": np.round(sprob[i][0].item(),4),
-                            "probability1": np.round(sprob[i][1].item(),4)
-                            #"uncertainty": np.round(suncertainty[i].item(),4)
-                        }
-                    for i in range(self.n_query*2):
-                        train_task_df[task_id]["query"][train_data['q_data'].id[i].item()]={
-                            "smiles":train_data['q_data'].smiles[i],
-                            "labels":train_data['q_data'].y[i].item(),           
-                            "probability0":np.round(qprob[i][0].item(),4),
-                            "probability1":np.round(qprob[i][1].item(),4),
-                            "uncertainty" :np.round(quncertainty[i].item(),4)}
-                
-            ##
             
             losses_eval = torch.stack(losses_eval)
-            #task_unc = torch.stack(task_unc)
-            print(losses_eval)
-            #task aware
             task_emb = torch.stack(task_emb)
             task_emb = task_emb.detach()
             task_weight = self.attention(task_emb)
-            diff = task_emb - torch.transpose(task_emb,1,0)
-            diff_sq = torch.pow(diff, 2)
-            task_loss = torch.exp(-(diff_sq.sum(dim=-1) / (10)*2))
-            #task_weight = 1
-            print(task_loss,task_weight)
-            losses_eval = torch.sum(task_loss*task_weight*losses_eval)
+            losses_eval = torch.sum(task_weight*losses_eval)
             losses_eval = losses_eval / len(task_id_list)
             self.optimizer.zero_grad()
             losses_eval.backward()
@@ -426,7 +384,6 @@ class Meta_Trainer(nn.Module):
         unc = []
         test_task_df = dict()
         for task_id in range(len(self.test_tasks)):
-            
             adapt_data, eval_data = self.get_data_sample(task_id, train=False, flag=flag)
             model = self.model.clone()
             test_task_num = task_id+len(self.train_tasks)+1
@@ -435,104 +392,161 @@ class Meta_Trainer(nn.Module):
             
             if self.update_step_test>0:
                 model.train()
-                ##inner_loop
+                #Meta-Test inner_loop Adaption
                 for i in range(self.update_step_test):
                     print("update_test: ", i)
-                    
                     cur_adapt_data = {'s_data': adapt_data['s_data'], 's_label': adapt_data['s_label']}
-                        
                     adaptable_weights = self.get_adaptable_weights(model)
+                    if self.evidence:
+                        loss_adapt,sprob,_,_,_,_,_,_= self.get_loss(model, cur_adapt_data['s_data'], cur_adapt_data['s_label'],task_id,train=True,query=True)
+                    else:
+                        loss_adapt,sprob = self.get_loss(model, cur_adapt_data['s_data'], cur_adapt_data['s_label'],task_id,train=True,query=False)
                     
-                    loss_adapt,sprob,_ = self.get_loss(model, cur_adapt_data['s_data'], cur_adapt_data['s_label'],task_id,train=True,query=False)
-                    #loss_adapt = loss_adapt/(self.n_shot_test*2)
                     model.adapt(loss_adapt, adaptable_weights=adaptable_weights)
-                    
                     if i>= self.update_step_test-1:
                         break
-            #Meta-Test query step
+            #Meta-Test evaluation
             model.eval()
             with torch.no_grad():
-                #여기서 get_loss -> pred, unc return
-                if self.evidence:
-                    pred_eval, qprob, quncertainty = self.get_loss(model,eval_data['q_data'],eval_data['q_label'],task_id, train=False)
-                     #y_prob,y_score = torch.max(pred_eval,1) #value / indice
-                    _,y_pred = torch.max(pred_eval,1) #value / indice
-                    #y_score = prob[:,1] # prob of 1
-                    y_score = y_pred
+                if self.evidence: 
+                    q_pred, qprob, quncertainty,qwbv,qcbv,qdis,qbelief = self.get_loss(model,eval_data['q_data'],eval_data['q_label'],task_id, train=False)
+                    s_pred,sprob, suncertainty,swbv,scbv,sdis, sbelief = self.get_loss(model, cur_adapt_data['s_data'], cur_adapt_data['s_label'],task_id,train=False)
+                    y_score = qprob[:,1]
+                    _,qy_pred = torch.max(qprob,1)
+                    _,sy_pred = torch.max(sprob,1)
+                    #test_task data frame
+                    smqy = F.softmax(q_pred,dim=-1)[:,1]
+                    smsy = F.softmax(s_pred,dim=-1)[:,1]
                     test_task_df[test_task_num]["support"] = {}
                     test_task_df[test_task_num]["query"] = {}
+                    print('recording...')
+                    #recording support
                     for i in range(self.n_shot_train*2):
                         test_task_df[test_task_num]["support"][cur_adapt_data['s_data'].id[i].item()]={
+                            "ID" : cur_adapt_data['s_data'].id[i].item(),
                             "smiles":cur_adapt_data['s_data'].smiles[i],
                             "labels":cur_adapt_data['s_data'].y[i].item(),
-                            "probability0":np.round(sprob[i][0].item(),4),
-                            "probability1":np.round(sprob[i][1].item(),4),
-                            #"uncertainty":np.round(suncertainty[i].item(),4)
+                            "belief0":np.round(sbelief[i][0].item(),4),
+                            "belief1":np.round(sbelief[i][1].item(),4),
+                            "prob0":np.round(sprob[i][0].item(),4),
+                            "prob1": np.round(sprob[i][1].item(),4),
+                            "vacuity":np.round(suncertainty[i].item(),4),
+                            "wbv" : np.round(swbv[i].item(),4),
+                            "dis" : np.round(sdis[i].item(),4),
+                            "cbv" : np.round(scbv[i].item(),4),
+                            "pred": sy_pred[i].item(),
+                            "softmax" : np.round(smsy[i].item(),4)
                         }
+                    #recording query
+                    for i in range(self.n_shot_train*2):
+                        test_task_df[test_task_num]["query"][cur_adapt_data['s_data'].id[i].item()]={
+                            "ID" : cur_adapt_data['s_data'].id[i].item(),
+                            "smiles":cur_adapt_data['s_data'].smiles[i],
+                            "labels":cur_adapt_data['s_data'].y[i].item(),
+                            "belief0":np.round(sbelief[i][0].item(),4),
+                            "belief1":np.round(sbelief[i][1].item(),4),
+                            "prob0":np.round(sprob[i][0].item(),4),
+                            "prob1": np.round(sprob[i][1].item(),4),
+                            "vacuity":np.round(suncertainty[i].item(),4),
+                            "wbv" : np.round(swbv[i].item(),4),
+                            "dis" : np.round(sdis[i].item(),4),
+                            "cbv" : np.round(scbv[i].item(),4),
+                            "pred": sy_pred[i].item(),
+                            "softmax" : np.round(smsy[i].item(),4)
+                        }
+                        
                     for i in range(len(eval_data['q_data'].id)):
                         test_task_df[test_task_num]["query"][eval_data['q_data'].id[i].item()]={
+                            "ID" : eval_data['q_data'].id[i].item(),
                             "smiles":eval_data['q_data'].smiles[i],
                             "labels":eval_data['q_data'].y[i].item(),
-                            "probability0":np.round(qprob[i][0].item(),4),
-                            "probability1":np.round(qprob[i][1].item(),4),
-                            "uncertainty":quncertainty[i].item()}
-                else:
-                    pred_eval, _ = self.get_loss(model,eval_data['q_data'],eval_data['q_label'], train=False)
-                    y_score = F.softmax(pred_eval,dim=-1).detach()[:,1]
-                y_true = eval_data['q_label']
-                auc = auroc(y_score,y_true,num_classes=1).item()
-                
-                
-                if self.evidence:
-                    y_prob0 = [np.round(i[0].item(),4) for i in qprob] # if evidence : evidence prob / else :softmax prob
-                    y_prob1 = [np.round(i[1].item(),4) for i in qprob]
-                    uncertainty = [np.round(i.item(),4) for i in quncertainty] #uncertainty
-                    y_true = [np.round(i.item(),4) for i in y_true] #truth label
-                else :
-                    y_true = [np.round(i.item(),4) for i in y_true] #truth label
-                    y_score = [np.round(i.item(),4) for i in y_score]
+                            "belief0":np.round(qbelief[i][0].item(),4),
+                            "belief1":np.round(qbelief[i][1].item(),4),
+                            "prob0":np.round(qprob[i][0].item(),4),
+                            "prob1": np.round(qprob[i][1].item(),4),
+                            "vacuity":np.round(quncertainty[i].item(),4),
+                            "wbv" : np.round(qwbv[i].item(),4),
+                            "dis" : np.round(qdis[i].item(),4),
+                            "cbv" : np.round(qcbv[i].item(),4),
+                            "pred": qy_pred[i].item(),
+                            "softmax" : np.round(smqy[i].item(),4)
+                        }
+                        
+                        
+                else:# normal softmax
+                    q_pred, _ = self.get_loss(model,eval_data['q_data'],eval_data['q_label'],task_id, train=False)
+                    s_pred, _ = self.get_loss(model,eval_data['s_data'],eval_data['s_label'],task_id, train=False)
+                    y_score = F.softmax(q_pred,dim=-1)
+                    qprob = y_score
+                    sprob = F.softmax(s_pred,dim=-1)
+                    #_,y_pred = torch.max(y_score,1)
+                    y_score = y_score.detach()[:,1]
+                    _,qy_pred = torch.max(qprob,1)
+                    _,sy_pred = torch.max(sprob,1)
+                    smqy = F.softmax(q_pred,dim=-1)[:,1]
+                    smsy = F.softmax(s_pred,dim=-1)[:,1]
+                    test_task_df[test_task_num]["support"] = {}
+                    test_task_df[test_task_num]["query"] = {}
+                    print('recording...')
+                    for i in range(self.n_shot_train*2):
+                        test_task_df[test_task_num]["support"][cur_adapt_data['s_data'].id[i].item()]={
+                            "ID" : eval_data['s_data'].id[i].item(),
+                            "smiles":cur_adapt_data['s_data'].smiles[i],
+                            "labels":cur_adapt_data['s_data'].y[i].item(),
+                            "pred": sy_pred[i].item(),
+                            "softmax" : np.round(smsy[i].item(),4)
+                        }
+                    for i in range(self.n_shot_train*2):
+                        test_task_df[test_task_num]["query"][cur_adapt_data['s_data'].id[i].item()]={
+                            "ID" : eval_data['s_data'].id[i].item(),
+                            "smiles":cur_adapt_data['s_data'].smiles[i],
+                            "labels":cur_adapt_data['s_data'].y[i].item(),
+                            "pred": sy_pred[i].item(),
+                            "softmax" : np.round(smsy[i].item(),4)
+                        }
+                        
+                    for i in range(len(eval_data['q_data'].id)):
+                        test_task_df[test_task_num]["query"][eval_data['q_data'].id[i].item()]={
+                            "ID" : eval_data['q_data'].id[i].item(),
+                            "smiles":eval_data['q_data'].smiles[i],
+                            "labels":eval_data['q_data'].y[i].item(),
+                            "pred": qy_pred[i].item(),
+                            "softmax" : np.round(smqy[i].item(),4)
+                        }
                     
-            auc_scores.append(auc)
-            
-            if self.evidence:
-                unc.append([uncertainty,y_prob0,y_prob1,y_true]) #y_score -> evidence prob
-            else : # if not evidence : just softmax probability needed
+                y_true = eval_data['q_label']
+                class_0_mask = (y_true == 0)
+                class_0_accuracy = torch.sum(qy_pred[class_0_mask] == y_true[class_0_mask]).item() / torch.sum(class_0_mask).item()
+
+                # Calculate accuracy for class 1
+                class_1_mask = (y_true == 1)
+                class_1_accuracy = torch.sum(qy_pred[class_1_mask] == y_true[class_1_mask]).item() / torch.sum(class_1_mask).item()
+
+                # Print the accuracies
+                print("Accuracy for class 0: {}, #of0 : {}, #of right {}".format(class_0_accuracy, torch.sum(class_0_mask).item(),torch.sum(qy_pred[class_0_mask] == y_true[class_0_mask]).item()))
+                print("Accuracy for class 1: {}, #of1 : {}, #of right {}".format(class_1_accuracy, torch.sum(class_1_mask).item(),torch.sum(qy_pred[class_1_mask] == y_true[class_1_mask]).item()))
                 
-                unc.append([y_score,y_true,0,0])
+                auc = auroc(y_score,y_true,num_classes=2).item()
+            #summarize        
+            auc_scores.append(auc)
             print('Test Epoch:',self.train_epoch,', test for task:', task_id, ', AUC:', round(auc, 4))
-            
             if self.args.save_logs:
                 step_results['query_preds'].append(y_score.detach().cpu().numpy())
                 step_results['query_labels'].append(y_true.detach().cpu().numpy())
                 step_results['task_index'].append(self.test_tasks[task_id].detach().cpu().numpy())
-                if self.evidence:
-                    step_results['uncertainty'].append(unc)
-                else :
-                    unc = unc+[0]*len(self.test_tasks-1)
-                    step_results['uncertainty'].append(unc)
+        
         
         #end of all test tasks
         mid_auc = np.median(auc_scores)
         avg_auc = np.mean(auc_scores)
         
-        # when testing on jupyter notebook
-        if not flag:
-            if self.evidence:
-                
-                return unc,eval_data['q_data']
-            else :
-                return unc,eval_data['q_data']
-        
-        
         
         
         self.best_auc = max(self.best_auc,avg_auc)
         
-        if self.train_epoch == self.args.epochs or self.current_epoch == 500 or self.current_epoch==1 or self.current_epoch==1000 or self.args.early_stop_count == 15 :
-            self.logger.append([self.train_epoch] + auc_scores  +[avg_auc, mid_auc,self.best_auc]+[i for i in unc], verbose=False)
-        else :
-            temp =[0]*len(self.test_tasks)
-            self.logger.append([self.train_epoch] + auc_scores  +[avg_auc, mid_auc,self.best_auc]+temp, verbose=False)
+        if self.train_epoch == self.args.epochs or self.current_epoch==1 or self.current_epoch%100==0 :
+            self.logger.append([self.train_epoch] + auc_scores  +[avg_auc, mid_auc,self.best_auc], verbose=False)
+        
         print('Test Epoch:', self.train_epoch, ', AUC_Mid:', round(mid_auc, 4), ', AUC_Avg: ', round(avg_auc, 4),
               ', Best_Avg_AUC: ', round(self.best_auc, 4),)
         

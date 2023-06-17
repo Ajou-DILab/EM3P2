@@ -69,18 +69,6 @@ class MLP(nn.Module):
     def forward(self, emb):
         out = self.network(emb)
         return out
-class Task_MLP(nn.Module):
-    def __init__(self, inp_dim, hidden_dim,task,batch_norm=False, dropout=0.):
-        super(Task_MLP, self).__init__()
-        layer_list = OrderedDict()
-        in_dim = inp_dim
-        layer_list['fc0'] = nn.Linear(in_dim, task)
-        #torch.nn.init.zeros_(layer_list['fc0'].weight)
-        self.network = nn.Sequential(layer_list)
-
-    def forward(self, emb):
-        out = self.network(emb)
-        return out
 
 class EM3P2(nn.Module):
     def __init__(self, args):
@@ -101,13 +89,10 @@ class EM3P2(nn.Module):
             self.mol_encoder.from_pretrained(model_file, self.gpu_id)
         # classification layer
         self.encode_projection = MLP(inp_dim=args.emb_dim, hidden_dim=args.emb_dim , task=2, batch_norm=args.batch_norm)
-        self.encode_task = Task_MLP(inp_dim=args.emb_dim, hidden_dim=args.emb_dim , task=9, batch_norm=args.batch_norm)
 
     def forward(self, data, label=None):
         
         graph_emb, node_emb = self.mol_encoder(data.x, data.edge_index, data.edge_attr, data.batch)
         logits = self.encode_projection(graph_emb)
-        task_logit = self.encode_task(graph_emb)
         
-        
-        return logits, node_emb, graph_emb,task_logit
+        return logits, node_emb, graph_emb

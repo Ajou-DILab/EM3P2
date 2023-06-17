@@ -5,14 +5,17 @@ import torch.nn.functional as F
 import torch.distributions as dist
 import numpy as np
 from torch.utils.data import TensorDataset
+from sklearn.metrics import auc
 
+# adopted form https://github.com/pandeydeep9/Units-ML-CVPR-22
 class Evidence_Classifier(nn.Module):
     def __init__(self, args):
         super(Evidence_Classifier, self).__init__()
         self.device = args.device
         self.args = args
         self.current_epoch = 0
-        
+        self.eps = 1e-10
+        self.disentangle = True
     def KL_flat_dirichlet(self, alpha):
         """
         Calculate Kl divergence between a flat/uniform dirichlet distribution and a passed dirichlet distribution
@@ -44,26 +47,26 @@ class Evidence_Classifier(nn.Module):
         alpha = alpha.to(self.device)
 
         S = torch.sum(alpha, dim=1, keepdim=True)
-
+        #logarithm
         first_part_error = torch.sum(gt * (torch.log(S) - torch.log(alpha)), dim=1, keepdim=True)
         #MSE
-        #loglikelihood_err = torch.sum((gt - (alpha / S)) ** 2, dim=1, keepdim=True)
-        #loglikelihood_var = torch.sum(
-        #    alpha * (S - alpha) / (S * S * (S + 1)), dim=1, keepdim=True
-        #)
-        #loglikelihood = loglikelihood_err + loglikelihood_var
-        #first_part_error = loglikelihood
+        # loglikelihood_err = torch.sum((gt - (alpha / S)) ** 2, dim=1, keepdim=True)
+        # loglikelihood_var = torch.sum(
+        #     alpha * (S - alpha) / (S * S * (S + 1)), dim=1, keepdim=True
+        # )
+        # loglikelihood = loglikelihood_err + loglikelihood_var
+        # first_part_error = loglikelihood
         
        
         annealing_rate = torch.min(
             torch.tensor(1.0, dtype=torch.float32),
-            torch.tensor(current_epoch / 1000, dtype=torch.float32)
+            torch.tensor(current_epoch / 2000, dtype=torch.float32)
         )
 
         if self.args.fix_annealing_rate:
             annealing_rate = 1
             # print(annealing_rate)
-
+       
         alpha_new = (alpha - 1) * (1 - gt) + 1
         kl_err = self.args.kl_scaling_factor * annealing_rate * self.KL_flat_dirichlet(alpha_new)
 
@@ -79,12 +82,13 @@ class Evidence_Classifier(nn.Module):
         inc_belief = belief * (1 - gt)
         inc_belief_error = self.args.kl_scaling_factor * annealing_rate * torch.mean(inc_belief, dim = 1, keepdim=True)
 
-        if self.args.use_kl_error:
+        if self.args.use_kl_error == 1:
             loss = first_part_error + kl_err
             # print("kl using")
-        else:
-            loss = first_part_error# + inc_belief_error
-
+        elif self.args.use_kl_error == 2:
+            loss = first_part_error + inc_belief_error
+        else :
+            loss = first_part_error
         return loss
 
 
@@ -113,29 +117,19 @@ class Evidence_Classifier(nn.Module):
         return dissonance
 
     def calculate_dissonance_from_belief_vectorized(self, belief):
-        # print("belief shape: ", belief.shape)
         sum_bel_mat = torch.transpose(belief, -2, -1) + belief
         sum_bel_mat[sum_bel_mat == 0] = -500
-        # print("sum: ", sum_bel_mat)
         diff_bel_mat = torch.abs(torch.transpose(belief, -2, -1) - belief)
-        # print("diff bel mat: ", diff_bel_mat)
         div_diff_sum = torch.div(diff_bel_mat, sum_bel_mat)
-        # print("div diff sum up: ", div_diff_sum)
 
         div_diff_sum[div_diff_sum < -0] = 1
-        # print("div diff sum: ", div_diff_sum)
         Bal_mat = 1 - div_diff_sum
-        # print("Bal Mat vec: ", Bal_mat)
-        # import sys
-        # sys.exit()
         num_classes = belief.shape[1]
         Bal_mat[torch.eye(num_classes).byte().bool()] = 0  # torch.zeros((num_classes, num_classes))
-        # print("BAL mat: ", Bal_mat)
 
         sum_belief = torch.sum(belief)
 
         bel_bal_prod = belief * Bal_mat
-        # print("Prod: ", bel_bal_prod)
         sum_bel_bal_prod = torch.sum(bel_bal_prod, dim=1, keepdim=True)
         divisor_belief = sum_belief - belief
         scale_belief = belief / divisor_belief
@@ -172,6 +166,28 @@ class Evidence_Classifier(nn.Module):
         return each_dis
 
 
+    def aloss(self,gt,alpha,current_epoch):
+        gt = gt.to(self.device)
+        alpha = alpha.to(self.device)
+        S = torch.sum(alpha, dim=1, keepdim=True)
+        pred_scores, pred_cls = torch.max(alpha / S, 1, keepdim=True)
+        uncertainty = 2 / S
+        annealing_rate = torch.min(
+            torch.tensor(1.0, dtype=torch.float32),
+            torch.tensor(current_epoch / 2000, dtype=torch.float32)
+        )
+        acc_match = torch.reshape(torch.eq(pred_cls, gt.unsqueeze(1)).float(), (-1, 1))
+        if self.disentangle:
+            acc_uncertain = - torch.log(pred_scores * (1 - uncertainty) + self.eps)
+            inacc_certain = - torch.log((1 - pred_scores) * uncertainty + self.eps)
+        else:
+            acc_uncertain = - pred_scores * torch.log(1 - uncertainty + self.eps)
+            inacc_certain = - (1 - pred_scores) * torch.log(uncertainty + self.eps)
+        avu_loss = annealing_rate * acc_match * acc_uncertain + (1 - annealing_rate) * (1 - acc_match) * inacc_certain
+
+        return avu_loss
+    
+    
     def calculate_dissonance2(self, belief):
         dissonance = torch.zeros(belief.shape[0])
         for i in range(len(belief)):
@@ -194,66 +210,421 @@ class Evidence_Classifier(nn.Module):
             :param query_set: whether the query set or support set of ask
             :return: loss, vacuity, wrong_belief_vector and cor_belief_vector
             """
-
             # Make evidence non negative (use softplus)
             evidence = F.softplus(preds)
             # The prior parameters
             alpha = evidence + 1
-
             dirichlet_strength = torch.sum(alpha, dim=1)
             dirichlet_strength = dirichlet_strength.reshape((-1, 1))
-            
-            
             # Belief
             belief = evidence / dirichlet_strength
             # Total belief
             sum_belief = torch.sum(belief, dim=1)
-
             # Vacuity
             vacuity = 1 - sum_belief
-
             #Dissonance
             dissonance = self.calculate_dissonance3(belief)
-            
             # one hot vector for ground truth
             gt = torch.eye(len(y))[y].to(self.device)
             gt = gt[:, :2] ##
             wrong_belief_matrix = belief * (1 - gt)
-
             wrong_belief_vector = torch.sum(wrong_belief_matrix, dim=1)
             cor_belief_vector = torch.sum(belief * gt, dim=1)
-
-            loss = self.dir_prior_mult_likelihood_loss(gt, alpha, self.current_epoch)
             
-
+            loss = self.dir_prior_mult_likelihood_loss(gt, alpha, self.current_epoch)
+            if self.args.use_cal :
+                aloss = self.aloss(y,alpha,self.current_epoch)
+                loss = loss+0.1*aloss
+            
+            
             loss = torch.mean(loss)
 
+            #avloss = aloss(gt,alpha)
+            
             return loss, vacuity, wrong_belief_vector, cor_belief_vector, dissonance
+
         
-def compute_similarity(sg_emb, qg_emb):
-    similarity = torch.mm(sg_emb,qg_emb.T)
-    similarity = torch.nn.functional.normalize(similarity, p=2, dim=1)
-    return similarity
-def contrastive_loss(sg_emb, qg_emb):
-     # Compute denominator of the softmax
-    similarity = compute_similarity(sg_emb,qg_emb).to(1)
-    temperature = 1
-    exp_sim = torch.exp(similarity / temperature)
-    denom = torch.sum(exp_sim, dim=1, keepdim=True)
-    # Compute numerator of the softmax for positive pairs
-    pos_idx = torch.arange(10,20).to(1)
-    pos_sim = torch.index_select(similarity, dim=1, index=pos_idx)
-    pos_exp_sim = torch.exp(pos_sim / temperature)
-    pos_numer = torch.diag(pos_exp_sim)
-    # Compute numerator of the softmax for negative pairs
-    neg_idx = torch.arange(0, 10).to(1)
-    neg_sim = torch.index_select(similarity, dim=1, index=neg_idx)
-    neg_exp_sim = torch.sum(torch.exp(neg_sim / temperature), dim=1)
-    neg_numer = torch.diag(pos_exp_sim)
-    
-    # Compute loss
-    pos_loss = -torch.log(pos_numer / denom[:10, 0])
-    neg_loss = -torch.log(neg_numer / denom[10:, 0])
-    loss = torch.mean(pos_loss + neg_loss)
-    
-    return loss
+# adopted fromhttps://github.com/Cogito2012/DEAR
+class AUAvULoss(nn.Module):
+    """
+    Calculates Accuracy vs Uncertainty Loss of a model.
+    The input to this loss is logits from Monte_carlo sampling of the model, true labels,
+    and the type of uncertainty to be used [0: predictive uncertainty (default); 
+    1: model uncertainty]
+    """
+    def __init__(self, beta=1):
+        super(AUAvULoss, self).__init__()
+        self.beta = beta
+        self.eps = 1e-10
+
+    def entropy(self, prob):
+        return -1 * torch.sum(prob * torch.log(prob + self.eps), dim=-1)
+
+    def expected_entropy(self, mc_preds):
+        return torch.mean(self.entropy(mc_preds), dim=0)
+
+    def predictive_uncertainty(self, mc_preds):
+        """
+        Compute the entropy of the mean of the predictive distribution
+        obtained from Monte Carlo sampling.
+        """
+        return self.entropy(torch.mean(mc_preds, dim=0))
+
+    def model_uncertainty(self, mc_preds):
+        """
+        Compute the difference between the entropy of the mean of the
+        predictive distribution and the mean of the entropy.
+        """
+        return self.entropy(torch.mean(
+            mc_preds, dim=0)) - self.expected_entropy(mc_preds)
+
+    def auc_avu(self, probs, labels, unc):
+        """ returns AvU at various uncertainty thresholds"""
+        th_list = np.linspace(0, 1, 21)
+        umin = torch.min(unc)
+        umax = torch.max(unc)
+        avu_list = []
+        unc_list = []
+
+        #probs = F.softmax(logits, dim=1)
+        _, predictions = torch.max(probs, 1)
+        condfidences = probs[:,1]
+        
+        auc_avu = torch.ones(1, device=labels.device)
+        auc_avu.requires_grad_(True)
+
+        for t in th_list:
+            unc_th = umin + (torch.tensor(t) * (umax - umin))
+            n_ac = torch.zeros(
+                1,
+                device=labels.device)  # number of samples accurate and certain
+            n_ic = torch.zeros(1, device=labels.device
+                               )  # number of samples inaccurate and certain
+            n_au = torch.zeros(1, device=labels.device
+                               )  # number of samples accurate and uncertain
+            n_iu = torch.zeros(1, device=labels.device
+                               )  # number of samples inaccurate and uncertain
+
+            for i in range(len(labels)):
+                if ((labels[i].item() == predictions[i].item())
+                        and unc[i].item() <= unc_th.item()):
+                    """ accurate and certain """
+                    n_ac += confidences[i] * (1 - torch.tanh(unc[i]))
+                elif ((labels[i].item() == predictions[i].item())
+                      and unc[i].item() > unc_th.item()):
+                    """ accurate and uncertain """
+                    n_au += confidences[i] * torch.tanh(unc[i])
+                elif ((labels[i].item() != predictions[i].item())
+                      and unc[i].item() <= unc_th.item()):
+                    """ inaccurate and certain """
+                    n_ic += (1 - confidences[i]) * (1 - torch.tanh(unc[i]))
+                elif ((labels[i].item() != predictions[i].item())
+                      and unc[i].item() > unc_th.item()):
+                    """ inaccurate and uncertain """
+                    n_iu += (1 - confidences[i]) * torch.tanh(unc[i])
+
+            AvU = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu + 1e-10)
+            avu_list.append(AvU.data.cpu().numpy())
+            unc_list.append(unc_th)
+
+        auc_avu = auc(th_list, avu_list)
+        return auc_avu
+
+    def accuracy_vs_uncertainty(self, prediction, true_label, uncertainty,
+                                optimal_threshold):
+        n_ac = torch.zeros(
+            1,
+            device=true_label.device)  # number of samples accurate and certain
+        n_ic = torch.zeros(1, device=true_label.device
+                           )  # number of samples inaccurate and certain
+        n_au = torch.zeros(1, device=true_label.device
+                           )  # number of samples accurate and uncertain
+        n_iu = torch.zeros(1, device=true_label.device
+                           )  # number of samples inaccurate and uncertain
+
+        avu = torch.ones(1, device=true_label.device)
+        avu.requires_grad_(True)
+
+        for i in range(len(true_label)):
+            if ((true_label[i].item() == prediction[i].item())
+                    and uncertainty[i].item() <= optimal_threshold):
+                """ accurate and certain """
+                n_ac += 1
+            elif ((true_label[i].item() == prediction[i].item())
+                  and uncertainty[i].item() > optimal_threshold):
+                """ accurate and uncertain """
+                n_au += 1
+            elif ((true_label[i].item() != prediction[i].item())
+                  and uncertainty[i].item() <= optimal_threshold):
+                """ inaccurate and certain """
+                n_ic += 1
+            elif ((true_label[i].item() != prediction[i].item())
+                  and uncertainty[i].item() > optimal_threshold):
+                """ inaccurate and uncertain """
+                n_iu += 1
+
+        print('n_ac: ', n_ac, ' ; n_au: ', n_au, ' ; n_ic: ', n_ic, ' ;n_iu: ',
+              n_iu)
+        avu = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu)
+
+        return avu
+
+    def forward(self, probs, labels, unc):
+
+        #confidences, predictions = torch.max(probs, 1)
+        _, predictions = torch.max(probs, 1)
+        confidences = probs[:,1]
+
+        th_list = np.linspace(0, 1, 21)
+        umin = torch.min(unc)
+        umax = torch.max(unc)
+        avu_list = []
+        unc_list = []
+
+        #probs = F.softmax(logits, dim=1)
+        #confidences, predictions = torch.max(probs, 1)
+
+        auc_avu = torch.ones(1, device=labels.device)
+        auc_avu.requires_grad_(True)
+
+        for t in th_list:
+            unc_th = umin + (torch.tensor(t, device=labels.device) *
+                             (umax - umin))
+            n_ac = torch.zeros(
+                1,
+                device=labels.device)  # number of samples accurate and certain
+            n_ic = torch.zeros(1, device=labels.device
+                               )  # number of samples inaccurate and certain
+            n_au = torch.zeros(1, device=labels.device
+                               )  # number of samples accurate and uncertain
+            n_iu = torch.zeros(1, device=labels.device
+                               )  # number of samples inaccurate and uncertain
+
+            for i in range(len(labels)):
+                if ((labels[i].item() == predictions[i].item())
+                        and unc[i].item() <= unc_th.item()):
+                    """ accurate and certain """
+                    n_ac += confidences[i] * (1 - torch.tanh(unc[i]))
+                elif ((labels[i].item() == predictions[i].item())
+                      and unc[i].item() > unc_th.item()):
+                    """ accurate and uncertain """
+                    n_au += confidences[i] * torch.tanh(unc[i])
+                elif ((labels[i].item() != predictions[i].item())
+                      and unc[i].item() <= unc_th.item()):
+                    """ inaccurate and certain """
+                    n_ic += (1 - confidences[i]) * (1 - torch.tanh(unc[i]))
+                elif ((labels[i].item() != predictions[i].item())
+                      and unc[i].item() > unc_th.item()):
+                    """ inaccurate and uncertain """
+                    n_iu += (1 - confidences[i]) * torch.tanh(unc[i])
+
+            AvU = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu + self.eps)
+            avu_list.append(AvU)
+            unc_list.append(unc_th)
+        print(torch.stack(avu_list),unc_list)
+        auc_avu = auc(th_list, torch.stack(avu_list))
+        avu_loss = -1 * self.beta * torch.log(auc_avu + self.eps)
+        return avu_loss, auc_avu
+
+
+class AvULoss(nn.Module):
+    """
+    Calculates Accuracy vs Uncertainty Loss of a model.
+    The input to this loss is logits from Monte_carlo sampling of the model, true labels,
+    and the type of uncertainty to be used [0: predictive uncertainty (default); 
+    1: model uncertainty]
+    """
+    def __init__(self, beta=1):
+        super(AvULoss, self).__init__()
+        self.beta = beta
+        self.eps = 1e-10
+
+    def entropy(self, prob):
+        return -1 * torch.sum(prob * torch.log(prob + self.eps), dim=-1)
+
+    def expected_entropy(self, mc_preds):
+        return torch.mean(self.entropy(mc_preds), dim=0)
+
+    def predictive_uncertainty(self, mc_preds):
+        """
+        Compute the entropy of the mean of the predictive distribution
+        obtained from Monte Carlo sampling.
+        """
+        return self.entropy(torch.mean(mc_preds, dim=0))
+
+    def model_uncertainty(self, mc_preds):
+        """
+        Compute the difference between the entropy of the mean of the
+        predictive distribution and the mean of the entropy.
+        """
+        return self.entropy(torch.mean(
+            mc_preds, dim=0)) - self.expected_entropy(mc_preds)
+
+    def accuracy_vs_uncertainty(self, prediction, true_label, uncertainty,
+                                optimal_threshold):
+        # number of samples accurate and certain
+        n_ac = torch.zeros(1, device=true_label.device)
+        # number of samples inaccurate and certain
+        n_ic = torch.zeros(1, device=true_label.device)
+        # number of samples accurate and uncertain
+        n_au = torch.zeros(1, device=true_label.device)
+        # number of samples inaccurate and uncertain
+        n_iu = torch.zeros(1, device=true_label.device)
+
+        avu = torch.ones(1, device=true_label.device)
+        avu.requires_grad_(True)
+
+        for i in range(len(true_label)):
+            if ((true_label[i].item() == prediction[i].item())
+                    and uncertainty[i].item() <= optimal_threshold):
+                """ accurate and certain """
+                n_ac += 1
+            elif ((true_label[i].item() == prediction[i].item())
+                  and uncertainty[i].item() > optimal_threshold):
+                """ accurate and uncertain """
+                n_au += 1
+            elif ((true_label[i].item() != prediction[i].item())
+                  and uncertainty[i].item() <= optimal_threshold):
+                """ inaccurate and certain """
+                n_ic += 1
+            elif ((true_label[i].item() != prediction[i].item())
+                  and uncertainty[i].item() > optimal_threshold):
+                """ inaccurate and uncertain """
+                n_iu += 1
+
+        print('n_ac: ', n_ac, ' ; n_au: ', n_au, ' ; n_ic: ', n_ic, ' ;n_iu: ',
+              n_iu)
+        avu = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu)
+
+        return avu
+
+    def forward(self, probs, labels,unc, optimal_uncertainty_threshold):
+
+        #probs = F.softmax(logits, dim=1)
+        _, predictions = torch.max(probs, 1)
+        confidences = probs[:,1]
+        # if type == 0:
+        #     unc = self.entropy(probs)
+        # else:
+        #     unc = self.model_uncertainty(probs)
+
+        unc_th = torch.tensor(optimal_uncertainty_threshold,
+                              device=labels.device)
+
+        n_ac = torch.zeros(
+            1, device=labels.device)  # number of samples accurate and certain
+        n_ic = torch.zeros(
+            1,
+            device=labels.device)  # number of samples inaccurate and certain
+        n_au = torch.zeros(
+            1,
+            device=labels.device)  # number of samples accurate and uncertain
+        n_iu = torch.zeros(
+            1,
+            device=labels.device)  # number of samples inaccurate and uncertain
+
+        avu = torch.ones(1, device=labels.device)
+        avu_loss = torch.zeros(1, device=labels.device)
+
+        for i in range(len(labels)):
+            if ((labels[i].item() == predictions[i].item())
+                    and unc[i].item() <= unc_th.item()):
+                """ accurate and certain """
+                n_ac += confidences[i] * (1 - torch.tanh(unc[i]))
+            elif ((labels[i].item() == predictions[i].item())
+                  and unc[i].item() > unc_th.item()):
+                """ accurate and uncertain """
+                n_au += confidences[i] * torch.tanh(unc[i])
+            elif ((labels[i].item() != predictions[i].item())
+                  and unc[i].item() <= unc_th.item()):
+                """ inaccurate and certain """
+                n_ic += (1 - confidences[i]) * (1 - torch.tanh(unc[i]))
+            elif ((labels[i].item() != predictions[i].item())
+                  and unc[i].item() > unc_th.item()):
+                """ inaccurate and uncertain """
+                n_iu += (1 - confidences[i]) * torch.tanh(unc[i])
+
+        avu = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu + self.eps)
+        p_ac = (n_ac) / (n_ac + n_ic)
+        p_ui = (n_iu) / (n_iu + n_ic)
+        #print('Actual AvU: ', self.accuracy_vs_uncertainty(predictions, labels, uncertainty, optimal_threshold))
+        avu_loss = -1 * self.beta * torch.log(avu + self.eps)
+        return avu_loss
+
+
+def entropy(prob):
+    return -1 * np.sum(prob * np.log(prob + 1e-15), axis=-1)
+
+
+def predictive_entropy(mc_preds):
+    """
+    Compute the entropy of the mean of the predictive distribution
+    obtained from Monte Carlo sampling during prediction phase.
+    """
+    return entropy(np.mean(mc_preds, axis=0))
+
+
+def mutual_information(mc_preds):
+    """
+    Compute the difference between the entropy of the mean of the
+    predictive distribution and the mean of the entropy.
+    """
+    MI = entropy(np.mean(mc_preds, axis=0)) - np.mean(entropy(mc_preds),
+                                                      axis=0)
+    return MI
+
+
+def eval_avu(pred_label, true_label, uncertainty):
+    """ returns AvU at various uncertainty thresholds"""
+    t_list = np.linspace(0, 1, 21)
+    umin = np.amin(uncertainty, axis=0)
+    umax = np.amax(uncertainty, axis=0)
+    avu_list = []
+    unc_list = []
+    for t in t_list:
+        u_th = umin + (t * (umax - umin))
+        n_ac = 0
+        n_ic = 0
+        n_au = 0
+        n_iu = 0
+        for i in range(len(true_label)):
+            if ((true_label[i] == pred_label[i]) and uncertainty[i] <= u_th):
+                n_ac += 1
+            elif ((true_label[i] == pred_label[i]) and uncertainty[i] > u_th):
+                n_au += 1
+            elif ((true_label[i] != pred_label[i]) and uncertainty[i] <= u_th):
+                n_ic += 1
+            elif ((true_label[i] != pred_label[i]) and uncertainty[i] > u_th):
+                n_iu += 1
+
+        AvU = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu + 1e-15)
+        avu_list.append(AvU)
+        unc_list.append(u_th)
+    return np.asarray(avu_list), np.asarray(unc_list)
+
+
+def accuracy_vs_uncertainty(pred_label, true_label, uncertainty,
+                            optimal_threshold):
+
+    n_ac = 0
+    n_ic = 0
+    n_au = 0
+    n_iu = 0
+    for i in range(len(true_label)):
+        if ((true_label[i] == pred_label[i])
+                and uncertainty[i] <= optimal_threshold):
+            n_ac += 1
+        elif ((true_label[i] == pred_label[i])
+              and uncertainty[i] > optimal_threshold):
+            n_au += 1
+        elif ((true_label[i] != pred_label[i])
+              and uncertainty[i] <= optimal_threshold):
+            n_ic += 1
+        elif ((true_label[i] != pred_label[i])
+              and uncertainty[i] > optimal_threshold):
+            n_iu += 1
+
+    AvU = (n_ac + n_iu) / (n_ac + n_au + n_ic + n_iu)
+    return AvU
+
+

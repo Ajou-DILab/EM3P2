@@ -1,5 +1,5 @@
 import random
-import numpy
+import numpy as np
 import torch
 
 def obatin_train_test_tasks(dataset):
@@ -127,7 +127,7 @@ def sample_inds(data, size):
         return random.sample(data, len_data) + sample_inds(data, size - len_data)
 
 
-def sample_meta_datasets(data, dataset, task, n_shot, n_query):
+def sample_meta_datasets(data, dataset, task, n_shot, n_query,random_pick):
     pseudo_adapt = None
     distri_list = obtain_distr_list(dataset)
     
@@ -144,39 +144,43 @@ def sample_meta_datasets(data, dataset, task, n_shot, n_query):
         
     s_list_1 = neg_sample[:n_shot] + pos_sample[:n_shot]
     
-    neg_query = [i for i in range(0, thresh1) if i not in s_list_1]
-    pos_query = [i for i in range(thresh1, thresh2) if i not in s_list_1]
+    if random_pick:
+        s_adapt = data[torch.tensor(s_list_1)]
+        l = [i for i in range(0, thresh2) if i not in s_list_1]
+        q_sample = sample_inds(l, n_query)
+        q_list_1 = q_sample[:n_query]
+        random.shuffle(l)
+        q_adapt = data[torch.tensor(q_list_1)]
     
-    neg_query_sample = sample_inds(neg_query, n_query)
-    pos_query_sample = sample_inds(pos_query, n_query)
-    
-    print(len(neg_query_sample),len(pos_query_sample))
-    l = neg_query_sample + pos_query_sample
-    ###
-    #l = [i for i in range(0, thresh2) if i not in s_list_1]
-    #q_sample = sample_inds(l, n_query)
-    #q_list_1 = q_sample[:n_query]
-    ###
-    random.shuffle(l)
-    
-    ###q_sample = sample_inds(l, n_query)
-    ###q_list_1 = q_sample[:n_query]
-    
+    else:
+        neg_query = [i for i in range(0, thresh1) if i not in s_list_1]
+        pos_query = [i for i in range(thresh1, thresh2) if i not in s_list_1]
 
-    s_adapt = data[torch.tensor(s_list_1)]
-    ###
-    #q_adapt = data[torch.tensor(q_list_1)]
-    ###
+        #ratio = np.round(thresh1/thresh2,1) # neg
+        #print(ratio ,n_query*ratio,n_query*(1-ratio) )
+
+        neg_query_sample = sample_inds(neg_query, n_query)
+        pos_query_sample = sample_inds(pos_query, n_query)
+
+        print(len(neg_query_sample),len(pos_query_sample))
+        l = neg_query_sample + pos_query_sample
+
+
+
+        s_adapt = data[torch.tensor(s_list_1)]
+        ###
+
+        ###
+
+        q_adapt = data[torch.tensor(l)]
+
+        #txt = [q_adapt[i]['y'] for i in range(len(q_adapt))]
+        #print(txt)
+        # support 와 query
     
-    q_adapt = data[torch.tensor(l)]
-    
-    #txt = [q_adapt[i]['y'] for i in range(len(q_adapt))]
-    #print(txt)
-    # support 와 query
     
     
-    
-    return s_adapt, q_adapt, pseudo_adapt
+    return s_adapt, q_adapt
 
 def sample_test_datasets(data, dataset, task, n_shot, n_query, update_step=1,flag=True):
     pseudo_data = None
@@ -228,3 +232,14 @@ def new_sample_test_datasets(data, dataset, task, n_support=0.7, n_query =0.3, u
     s_data = data[torch.tensor(s_list)]
     q_data = data[torch.tensor(q_list)]
     return s_data, q_data
+
+def sample_all(data,dataset):
+    print(data,dataset)
+    distri_list = obtain_distr_list(dataset)
+    if dataset =="tox21" :
+        thresh = range(7831)
+    else: #sider
+        thresh = range(1427)
+    print(thresh)
+    data[torch.tensor(thresh)]
+    return data
