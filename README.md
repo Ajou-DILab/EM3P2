@@ -3,7 +3,7 @@ This is PyTorch implementation of "Evidential Meta Model for Molecular Property 
 Please cite our paper if you find it helpful. Thank you.
 
 # Environment
-'''
+'''python
 python 3.7.13
 
 pytorch 1.11.0
@@ -16,6 +16,6 @@ rdkit 2022.9.5
 Tox21, SIDER can be downloaded from [SNAP](https://snap.stanford.edu/gnn-pretrain/data/). Unzip the file and put the file in data folder.
 # Experiments
 To run the experimets, use the command(check the hyper-parameters in parser.py):
-'''
+'''python
 python main.py
 '''
