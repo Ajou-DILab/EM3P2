@@ -5,8 +5,11 @@ Please cite our paper if you find it helpful. Thank you.
 # Environment
 '''
 python 3.7.13
+
 pytorch 1.11.0
+
 pyg 2.0.4
+
 rdkit 2022.9.5
 '''
 # Datasets
