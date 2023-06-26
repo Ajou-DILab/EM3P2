@@ -1,24 +1,21 @@
-'''
-Title: Eviden
-Authors:
-- Lee Sael (sael@ajou.ac.kr) Ajou University
-- Ham Kyung Pyo (hidden719@ajou.ac.kr) Ajou University
-This software may be used only for research evaluation purposes.
-For other purposes (e.g., commercial), please contact the authors.
-'''
 import sys
 import os
-import numpy as np
-from itertools import compress
-import random
-import json
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
-name = 'tox21'
+import numpy as np
+from itertools import compress
+
+import random
+
+import json
+
+name = 'toxcast' # tox21
+
 
 f = open(os.path.join(BASE_DIR, '{}/raw/{}.csv'.format(name,name)), 'r').readlines()[1:]
 np.random.shuffle(f)
+
 
 if __name__ == "__main__":
     tasks = {}
@@ -48,6 +45,7 @@ if __name__ == "__main__":
 
     cnt_tasks=[]
     for i in tasks:
+        #10/9
         root = name + "/new/" + str(i)
         os.makedirs(root, exist_ok=True)
         os.makedirs(root + "/raw", exist_ok=True)

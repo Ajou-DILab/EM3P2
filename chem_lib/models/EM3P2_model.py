@@ -1,3 +1,11 @@
+'''
+Title: Evidential Meta-Learning for Molecular Property Prediction
+Authors:
+- Lee Sael (sael@ajou.ac.kr) Ajou University
+- Ham Kyung Pyo (hidden719@ajou.ac.kr) Ajou University
+This software may be used only for research evaluation purposes.
+For other purposes (e.g., commercial), please contact the authors.
+'''
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,14 +19,15 @@ from torch_geometric.data import Data,Batch
 from torch_geometric.data import InMemoryDataset
 from torch_geometric.data import DataLoader
 from itertools import repeat
-###
 from collections import OrderedDict
-from .encoder import GNN_Encoder
-
 from rdkit import Chem
 from rdkit.Chem import rdmolops
 import pickle
 from transformers import AutoTokenizer, AutoModel
+
+from .graph_encoder import GNN_Encoder
+
+
 
 try:
     from rdkit import Chem
