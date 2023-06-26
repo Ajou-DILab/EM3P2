@@ -7,7 +7,7 @@ import numpy as np
 from torch.utils.data import TensorDataset
 from sklearn.metrics import auc
 
-# adopted form https://github.com/pandeydeep9/Units-ML-CVPR-22
+# adapted form https://github.com/pandeydeep9/Units-ML-CVPR-22
 class Evidence_Classifier(nn.Module):
     def __init__(self, args):
         super(Evidence_Classifier, self).__init__()
@@ -426,7 +426,7 @@ class AUAvULoss(nn.Module):
         avu_loss = -1 * self.beta * torch.log(auc_avu + self.eps)
         return avu_loss, auc_avu
 
-
+#adapted from https://github.com/Cogito2012/DEAR
 class AvULoss(nn.Module):
     """
     Calculates Accuracy vs Uncertainty Loss of a model.
