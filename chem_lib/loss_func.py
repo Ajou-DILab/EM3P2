@@ -2,11 +2,12 @@
 Title: Evidential Meta-Learning for Molecular Property Prediction
 Authors:
 - KP Ham, Lee Sael (sael@ajou.ac.kr) Ajou University
+Codes adapted from :
+- https://github.com/pandeydeep9/Units-ML-CVPR-22
+- https://github.com/Cogito2012/DEAR
+
 This software may be used only for research evaluation purposes.
 For other purposes (e.g., commercial), please contact the authors.
-Codes adapted from :
-1. https://github.com/pandeydeep9/Units-ML-CVPR-22
-2. https://github.com/Cogito2012/DEAR
 '''
 import torch
 import torch.nn as nn
