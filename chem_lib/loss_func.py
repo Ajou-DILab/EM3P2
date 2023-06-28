@@ -1,3 +1,13 @@
+'''
+Title: Evidential Meta-Learning for Molecular Property Prediction
+Authors:
+- KP Ham, Lee Sael (sael@ajou.ac.kr) Ajou University
+This software may be used only for research evaluation purposes.
+For other purposes (e.g., commercial), please contact the authors.
+Codes adapted from :
+1. https://github.com/pandeydeep9/Units-ML-CVPR-22
+2. https://github.com/Cogito2012/DEAR
+'''
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,6 +18,7 @@ from torch.utils.data import TensorDataset
 from sklearn.metrics import auc
 
 # adapted form https://github.com/pandeydeep9/Units-ML-CVPR-22
+
 class Evidence_Classifier(nn.Module):
     def __init__(self, args):
         super(Evidence_Classifier, self).__init__()
