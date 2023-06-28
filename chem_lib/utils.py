@@ -2,10 +2,11 @@
 Title: Evidential Meta-Learning for Molecular Property Prediction
 Authors:
 - KP Ham, Lee Sael (sael@ajou.ac.kr) Ajou University
-This software may be used only for research evaluation purposes.
-For other purposes (e.g., commercial), please contact the authors.
 Codes adapted from :
 - https://github.com/tata1661/PAR-NeurIPS21
+
+This software may be used only for research evaluation purposes.
+For other purposes (e.g., commercial), please contact the authors.
 '''
 import os
 import json
