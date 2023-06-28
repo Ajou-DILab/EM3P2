@@ -5,7 +5,7 @@ Please cite our paper if you find it helpful. Thank you.
 ## Environment
 ```python
 
--python 3.7.13
+-python 3.7
 
 -pytorch 1.11.0
 
