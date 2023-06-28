@@ -1,3 +1,12 @@
+'''
+Code from https://github.com/tata1661/PAR-NeurIPS21
+@InProceedings{wang2021property,
+  title={Property-Aware Relation Networks for Few-Shot Molecular Property Prediction},
+  author={Wang, Yaqing and Abuduweili, Abulikemu and Yao, Quanming and Dou, Dejing},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2021},
+}
+'''
 import torch
 from torch_geometric.data import Data, Batch
 
