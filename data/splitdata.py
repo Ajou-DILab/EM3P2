@@ -1,10 +1,11 @@
 '''
-Title: Eviden
-Authors:
-- Lee Sael (sael@ajou.ac.kr) Ajou University
-- Ham Kyung Pyo (hidden719@ajou.ac.kr) Ajou University
-This software may be used only for research evaluation purposes.
-For other purposes (e.g., commercial), please contact the authors.
+Adapted from https://github.com/tata1661/PAR-NeurIPS21
+@InProceedings{wang2021property,
+  title={Property-Aware Relation Networks for Few-Shot Molecular Property Prediction},
+  author={Wang, Yaqing and Abuduweili, Abulikemu and Yao, Quanming and Dou, Dejing},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2021},
+}
 '''
 import sys
 import os
