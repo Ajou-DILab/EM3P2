@@ -1,3 +1,12 @@
+'''
+Adapted from https://github.com/tata1661/PAR-NeurIPS21
+@InProceedings{wang2021property,
+  title={Property-Aware Relation Networks for Few-Shot Molecular Property Prediction},
+  author={Wang, Yaqing and Abuduweili, Abulikemu and Yao, Quanming and Dou, Dejing},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2021},
+}
+'''
 import sys
 import os
 from glob import glob
@@ -6,7 +15,7 @@ import torch
 import numpy as np
 from itertools import compress
 
-name = 'toxcast'
+name = 'tox21'
 
 files = glob(name+'/new/*/processed/geometric_data_processed.pt')
 files=sorted(files,key= lambda x: int(x.split('/')[-3]))
