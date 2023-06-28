@@ -1,8 +1,8 @@
 '''
 Title: Evidential Meta-Learning for Molecular Property Prediction
 Authors:
-- Lee Sael (sael@ajou.ac.kr) Ajou University
-- Ham Kyung Pyo (hidden719@ajou.ac.kr) Ajou University
+- KP Ham, Lee Sael (sael@ajou.ac.kr) Ajou University
+
 This software may be used only for research evaluation purposes.
 For other purposes (e.g., commercial), please contact the authors.
 '''
