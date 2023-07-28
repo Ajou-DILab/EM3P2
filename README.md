@@ -12,6 +12,8 @@ Please cite our paper if you find it helpful. Thank you.
 -pyg 2.0.4
 
 -rdkit 2022.9.5
+
+-learn2learn 0.1.7
 ```
 
 ## Datasets
