@@ -25,3 +25,6 @@ To run the experimets, use the command(check the hyper-parameters in parser.py):
 python main.py
 
 ```
+
+## Cite
+Kyung Pyo Ham, Lee Sael, Evidential meta-model for molecular property prediction, Bioinformatics, Volume 39, Issue 10, October 2023, btad604, https://doi.org/10.1093/bioinformatics/btad604
